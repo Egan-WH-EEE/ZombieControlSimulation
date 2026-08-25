@@ -1,10 +1,9 @@
-# python /Users/eg4nhrr/Documents/ZOMBIECONTROL.py
+# python ZOMBIECONTROL.py
 # Imports libraries
 import pygame
 import math
 from math import sin, cos, pi
 import copy
-import time
 import random
 
 pygame.init()
@@ -14,8 +13,7 @@ clock = pygame.time.Clock()
 font = pygame.font.Font(None, 36)
 
 manual_button = pygame.Rect(10, 10, 120, 40)
-pid_button = pygame.Rect(140, 10, 120, 40)
-mpc_button = pygame.Rect(270, 10, 120, 40)
+mpc_button = pygame.Rect(140, 10, 120, 40)
 
 mode = "manual"
 
@@ -28,28 +26,16 @@ player_speed = 4
 zombies = [
     [100, 100]
     ]
-zombie_speed = 1
+zombie_speed = 3.5
 spawn_timer = 0
-
 
 # Used for frame control
 flash_timer = 0
 
-# PID constants
-Kp = 100
-Ki = 100
-Kd = 100
-vx = 0
-vy = 0
-integral_x = 0
-integral_y = 0
-prev_error_x = 0
-prev_error_y = 0
-
 # MPC constants
 score = [0]*32
-Wz = 2
-Wc = 0.05
+Wz = 200
+Wc = 0.2
 
 
 def zombie_distance(z):
@@ -62,6 +48,7 @@ def argmax(lst):
     return max(range(len(lst)), key=lambda i: lst[i])
 
 running = True
+prev_direction = 0
 while running:
     for event in pygame.event.get():
         if event.type == pygame.QUIT:
@@ -69,8 +56,6 @@ while running:
         if event.type == pygame.MOUSEBUTTONDOWN:
             if manual_button.collidepoint(event.pos):
                 mode = "manual"
-            if pid_button.collidepoint(event.pos):
-                mode = "pid"
             if mpc_button.collidepoint(event.pos):
                 mode = "mpc"
 
@@ -82,54 +67,22 @@ while running:
         if keys[pygame.K_a]: player_x -= player_speed
         if keys[pygame.K_d]: player_x += player_speed
 
-    elif mode == "pid":
-    # PID player control
-        nearest_zombie = min(zombies, key=zombie_distance)
-        zx, zy = nearest_zombie
-        error_x = player_x - zx
-        error_y = player_y - zy
-        e = [error_x, error_y]
-        integral_x += error_x
-        integral_y += error_y
-        P_x = Kp * error_x
-        P_y = Kp * error_y
-        I_x = Ki * integral_x
-        I_y = Ki * integral_y
-        D_x = Kd * (error_x - prev_error_x)
-        D_y = Kd * (error_y - prev_error_y)
-        vx += (P_x + I_x + D_x)
-        vy += (P_y + I_y + D_y)
-        vx *= 0.5
-        vy *= 0.5
-
-        # Limit max speed
-        max_speed = 3
-        speed = math.hypot(vx, vy)
-        if speed > max_speed:
-            vx = vx / speed * max_speed
-            vy = vy / speed * max_speed
-            
-        player_x += vx
-        player_y += vy
-        prev_error_x = error_x
-        prev_error_y = error_y
     elif mode == "mpc":
     # MPC player control
-        for i in range(32): # 8 directions - Up, Right, Down, Left, UR, BR, BL, UL
+        for i in range(32): # 32 directions around full circle, pi/16 step
             score[i] = 0
-            valid = True
             dummy_player_x = player_x
             dummy_player_y = player_y
             dummy_zombies = copy.deepcopy(zombies)
-            
+
             for t in range(6):
                 dummy_player_x += player_speed * sin(i * pi / 16)
                 dummy_player_y -= player_speed * cos(i * pi / 16)
+                # Keep player inside screen bounds
+                dummy_player_x = max(10, min(790, dummy_player_x))
+                dummy_player_y = max(10, min(590, dummy_player_y))
 
-                if not (10 < dummy_player_x < 790 and 10 < dummy_player_y < 590):
-                    valid = False
-                    break
-            
+
                 for z in dummy_zombies:
                     dx = dummy_player_x - z[0]
                     dy = dummy_player_y - z[1]
@@ -138,13 +91,9 @@ while running:
                         z[0] += zombie_speed * dx / dist
                         z[1] += zombie_speed * dy / dist
 
-            if not valid:
-                score[i] = -999999
-                continue
-
             min_z_dist = min(
-            ((dummy_player_x - z[0])**2 + (dummy_player_y - z[1])**2) ** 0.5
-            for z in dummy_zombies
+                ((dummy_player_x - z[0])**2 + (dummy_player_y - z[1])**2) ** 0.5
+                for z in dummy_zombies
             )
 
             dist_left   = dummy_player_x - 10
@@ -153,9 +102,15 @@ while running:
             dist_bottom = 590 - dummy_player_y
             open_space  = min(dist_left, dist_right, dist_top, dist_bottom)
 
-            score[i] = min_z_dist + 0.5 * open_space
-            
+            angular_diff = min(abs(i - prev_direction), 32 - abs(i - prev_direction))
+            bias = 0.0005 * (16 - angular_diff)  # closer to prev direction = bigger bonus
+
+            zombie_penalty = Wz / (min_z_dist + 1)**2
+            wall_penalty = Wc / (open_space + 1)**2
+            score[i] = -zombie_penalty - wall_penalty + bias
+
         best_direction = argmax(score)
+        prev_direction = best_direction
         angle = best_direction * (pi / 16)
         dx = sin(angle)
         dy = -cos(angle)
@@ -191,25 +146,23 @@ while running:
         dy = player_y - z[1]
         dist = (dx**2 + dy**2) ** 0.5
     # check if dist < minimum
-        if 0<dist<20:
+        if 0 < dist < 20:
     # if so, flash red and reset initial conditions
             flash_timer = 10
-            zombies = [[100,100]]
+            zombies = [[100, 100]]
             player_x, player_y = 400, 300
-
-
 
     # Keep player inside screen bounds
     player_x = max(10, min(790, player_x))
     player_y = max(10, min(590, player_y))
 
     spawn_timer += clock.get_time()  # milliseconds since last frame
-    if spawn_timer >= 4000:  # 10 seconds
+    if spawn_timer >= 2000:  # 2 seconds
         spawn_timer = 0
 
         # Spawn 1 new zombie at random location
-        zombies.append([random.randint(10,790),random.randint(10,590)])
-    
+        zombies.append([400, 300])
+
     # Draw all positions and background
     screen.fill((0, 0, 0))
     if flash_timer > 0:
@@ -220,20 +173,20 @@ while running:
         pygame.draw.circle(screen, (0, 100, 255), (int(player_x), int(player_y)), 10)
     for z in zombies:
         pygame.draw.circle(screen, (200, 100, 0), (int(z[0]), int(z[1])), 10)
-    pygame.draw.rect(screen, (100,100,100), manual_button)
-    pygame.draw.rect(screen, (100,100,100), pid_button)
-    pygame.draw.rect(screen, (100,100,100), mpc_button)
+    manual_color = (0, 200, 0) if mode == "manual" else (100, 100, 100)
+    mpc_color = (0, 200, 0) if mode == "mpc" else (100, 100, 100)
 
-    zcount_text = font.render(f"Zombies: {len(zombies)}", True, (255,255,255))
+    pygame.draw.rect(screen, manual_color, manual_button)
+    pygame.draw.rect(screen, mpc_color, mpc_button)
+
+    zcount_text = font.render(f"Zombies: {len(zombies)}", True, (255, 255, 255))
     screen.blit(zcount_text, (650, 18))
 
-    manual_text = font.render("Manual", True, (255,255,255))
-    pid_text = font.render("PID", True, (255,255,255))
-    mpc_text = font.render("MPC", True, (255,255,255))
+    manual_text = font.render("Manual", True, (255, 255, 255))
+    mpc_text = font.render("MPC", True, (255, 255, 255))
 
     screen.blit(manual_text, (20, 18))
-    screen.blit(pid_text, (170, 18))
-    screen.blit(mpc_text, (320, 18))
+    screen.blit(mpc_text, (150, 18))
 
     pygame.display.flip()
     clock.tick(60)
